@@ -6,7 +6,7 @@ import os
 import time
 import numpy as np
 from itertools import count, zip_longest
-
+from onmt.utils.heatmaps import plot_visualization_global
 import torch
 
 import onmt.model_builder
@@ -306,7 +306,7 @@ class Translator(object):
             * all_predictions is a list of `batch_size` lists
                 of `n_best` predictions
         """
-
+        attn_debug = True
         if batch_size is None:
             raise ValueError("batch_size must be set")
 
@@ -350,13 +350,13 @@ class Translator(object):
 
         start_time = time.time()
 
-        for batch in data_iter:
+        for batch_no, batch in enumerate(data_iter):
             batch_data = self.translate_batch(
                 batch, data.src_vocabs, attn_debug
             )
             translations = xlation_builder.from_batch(batch_data)
 
-            for trans in translations:
+            for sen_no, trans in enumerate(translations):
                 all_scores += [trans.pred_scores[:self.n_best]]
                 pred_score_total += trans.pred_scores[0]
                 pred_words_total += len(trans.pred_sents[0])
@@ -385,7 +385,17 @@ class Translator(object):
                         self.logger.info(output)
                     else:
                         os.write(1, output.encode('utf-8'))
+                
+                preds = trans.pred_sents[0]
+                preds.append('</s>')
+                attns = trans.attns[0]
+                if self.data_type == 'text':
+                    srcs = trans.src_raw
+                else:
+                    srcs = [str(item) for item in range(len(attns[0]))]
+                plot_visualization_global(srcs, preds, attns, batch_no, sen_no)
 
+                '''
                 if attn_debug:
                     preds = trans.pred_sents[0]
                     preds.append('</s>')
@@ -395,11 +405,12 @@ class Translator(object):
                     else:
                         srcs = [str(item) for item in range(len(attns[0]))]
                     output = report_matrix(srcs, preds, attns)
+                   
                     if self.logger:
                         self.logger.info(output)
                     else:
                         os.write(1, output.encode('utf-8'))
-
+                '''   
                 if align_debug:
                     if trans.gold_sent is not None:
                         tgts = trans.gold_sent
@@ -552,9 +563,9 @@ class Translator(object):
     def _run_encoder(self, batch):
         src, src_lengths = batch.src if isinstance(batch.src, tuple) \
                            else (batch.src, None)
-
+        
         enc_states, memory_bank, src_lengths = self.model.encoder(
-            src, src_lengths)
+            src, batch, src_lengths)
         if src_lengths is None:
             assert not isinstance(memory_bank, tuple), \
                 'Ensemble decoding only supported for text data'

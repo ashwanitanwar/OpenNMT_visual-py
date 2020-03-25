@@ -3,12 +3,12 @@ Implementation of "Attention is All You Need"
 """
 
 import torch.nn as nn
-
+import torch
 from onmt.encoders.encoder import EncoderBase
 from onmt.modules import MultiHeadedAttention
 from onmt.modules.position_ffn import PositionwiseFeedForward
 from onmt.utils.misc import sequence_mask
-
+from onmt.utils.heatmaps import plot_visualization_self
 
 class TransformerEncoderLayer(nn.Module):
     """
@@ -46,10 +46,10 @@ class TransformerEncoderLayer(nn.Module):
             * outputs ``(batch_size, src_len, model_dim)``
         """
         input_norm = self.layer_norm(inputs)
-        context, _ = self.self_attn(input_norm, input_norm, input_norm,
+        context, at_self_attn = self.self_attn(input_norm, input_norm, input_norm,
                                     mask=mask, attn_type="self")
         out = self.dropout(context) + inputs
-        return self.feed_forward(out)
+        return self.feed_forward(out), at_self_attn
 
     def update_dropout(self, dropout, attention_dropout):
         self.self_attn.update_dropout(attention_dropout)
@@ -99,6 +99,7 @@ class TransformerEncoder(EncoderBase):
                 max_relative_positions=max_relative_positions)
              for i in range(num_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.batch_count = 0
 
     @classmethod
     def from_opt(cls, opt, embeddings):
@@ -114,22 +115,29 @@ class TransformerEncoder(EncoderBase):
             embeddings,
             opt.max_relative_positions)
 
-    def forward(self, src, lengths=None):
+    def forward(self, src, batch, lengths=None):
         """See :func:`EncoderBase.forward()`"""
         self._check_args(src, lengths)
-
         emb = self.embeddings(src)
-
         out = emb.transpose(0, 1).contiguous()
         mask = ~sequence_mask(lengths).unsqueeze(1)
         # Run the forward pass of every layer of the tranformer.
-        for layer in self.transformer:
-            out = layer(out, mask)
+        for i, layer in enumerate(self.transformer):
+            out, at_self_attn = layer(out, mask)
+            self.build_visualization(batch, i, at_self_attn)
         out = self.layer_norm(out)
-
+        self.batch_count += 1
         return emb, out.transpose(0, 1).contiguous(), lengths
 
     def update_dropout(self, dropout, attention_dropout):
         self.embeddings.update_dropout(dropout)
         for layer in self.transformer:
             layer.update_dropout(dropout, attention_dropout)
+
+    def build_visualization(self, batch, i, at_self_attn):
+        for sen_no in range(at_self_attn.shape[0]):
+            inds, perm = torch.sort(batch.indices)
+            #src = batch.src[0][:, :, 0].index_select(1, perm)
+            src_raw = batch.dataset.examples[inds[sen_no]].src[0] 
+            for head in range(at_self_attn.shape[1]):
+                plot_visualization_self(sen_no, src_raw, head, i, self.batch_count, at_self_attn[perm[sen_no]][head]) 
